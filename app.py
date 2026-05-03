@@ -263,17 +263,13 @@ with tab2:
             st.caption(f"ADF test p-value: **{adf_p:.4f}** — {stat_label}")
 
             # ── Order selection ─────────────────────────────────────────────
-            if order_mode == "🤖 Auto (recommended)":
-                with st.spinner("🔍 Auto-selecting ARIMA orders via BIC grid search..."):
-                    best_p, best_d, best_q = suggest_arima_orders(train_data)
-                st.success(f"Auto-selected orders: **p={best_p}, d={best_d}, q={best_q}**")
-                p, d, q = best_p, best_d, best_q
-                if model_choice == "SARIMA":
-                    P, D, Q = 1, 1, 1   # sensible SARIMA seasonal defaults
-            else:
-                p, d, q = p_man, d_man, q_man
-                if model_choice == "SARIMA":
-                    P, D, Q = P_man, D_man, Q_man
+            # Always auto — order_mode is always "🤖 Auto (recommended)"
+            with st.spinner("🔍 Auto-selecting ARIMA orders via BIC grid search..."):
+                best_p, best_d, best_q = suggest_arima_orders(train_data)
+            st.success(f"Auto-selected orders: **p={best_p}, d={best_d}, q={best_q}**")
+            p, d, q = best_p, best_d, best_q
+            if model_choice == "SARIMA":
+                P, D, Q = 1, 1, 1   # sensible SARIMA seasonal defaults
 
             s = s_man if model_choice == "SARIMA" else None
 
