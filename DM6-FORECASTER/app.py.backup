@@ -1,0 +1,703 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.stattools import adfuller, acf, pacf
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ── Page Config ────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Energy Demand Forecaster", page_icon="⚡", layout="wide")
+
+# ── Custom CSS Styling ─────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+    /* Main container styling */
+    .main {
+        background-color: #f8f9fa;
+    }
+    
+    /* Header styling */
+    .header-container {
+        background: linear-gradient(135deg, #2c5aa0 0%, #1e4a8a 100%);
+        padding: 2.5rem 2rem;
+        border-radius: 8px;
+        margin-bottom: 2rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .header-title {
+        color: #ffffff;
+        font-size: 2.2em;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: -0.5px;
+    }
+    
+    .header-subtitle {
+        color: #e8eef5;
+        font-size: 0.9em;
+        margin-top: 0.5rem;
+        font-weight: 400;
+    }
+    
+    .header-description {
+        color: #d1dce8;
+        font-size: 0.95em;
+        margin-top: 1rem;
+        line-height: 1.5;
+    }
+    
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: transparent;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding: 0 24px;
+        background-color: #ffffff;
+        border-radius: 6px 6px 0 0;
+        border: 1px solid #e0e0e0;
+        border-bottom: none;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #2c5aa0;
+        color: white;
+        font-weight: 600;
+        border-color: #2c5aa0;
+    }
+    
+    /* Card styling */
+    .info-card {
+        background: #ffffff;
+        padding: 1.25rem;
+        border-radius: 6px;
+        border-left: 4px solid #2c5aa0;
+        margin: 1rem 0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    
+    .success-card {
+        background: #f0f9f4;
+        padding: 1rem;
+        border-radius: 6px;
+        border-left: 4px solid #28a745;
+        margin: 1rem 0;
+    }
+    
+    .warning-card {
+        background: #fff8e6;
+        padding: 1rem;
+        border-radius: 6px;
+        border-left: 4px solid #ffc107;
+        margin: 1rem 0;
+    }
+    
+    /* Section headers */
+    .section-header {
+        color: #2c5aa0;
+        font-size: 1.4em;
+        font-weight: 600;
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #2c5aa0;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e0e0e0;
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        width: 100%;
+        background-color: #2c5aa0;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0.75rem 1.5rem;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+    
+    .stButton > button:hover {
+        background-color: #1e4a8a;
+        box-shadow: 0 2px 8px rgba(44, 90, 160, 0.3);
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background-color: #f8f9fa;
+        border-radius: 6px;
+        border: 1px solid #e0e0e0;
+    }
+    
+    /* Metric styling */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8em;
+        color: #2c5aa0;
+        font-weight: 600;
+    }
+    
+    /* Info/Success box styling */
+    .stInfo {
+        background-color: #e8f1fc;
+        border-left: 4px solid #2c5aa0;
+        border-radius: 6px;
+    }
+    
+    .stSuccess {
+        background-color: #f0f9f4;
+        border-left: 4px solid #28a745;
+        border-radius: 6px;
+    }
+    
+    .stWarning {
+        background-color: #fff8e6;
+        border-left: 4px solid #ffc107;
+        border-radius: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="header-container">
+    <h1 class="header-title">Electricity Consumption Forecasting & Anomaly Detection</h1>
+    <p class="header-subtitle">CS DM 6 — DATA MINING METHODOLOGIES: Final Requirement Case Study</p>
+    <p class="header-description">Predicting future energy demand and identifying abnormal usage patterns to support efficient energy management and optimization.</p>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="info-card">
+    <strong>Developed by:</strong> John Franklin Bugauisan, William Ray Respicio, Ahron John Barlis, Carlo Rossi Gallardo
+</div>
+""", unsafe_allow_html=True)
+
+
+# ── Helper Functions ───────────────────────────────────────────────────────────
+@st.cache_data
+def load_data(file):
+    return pd.read_csv(file)
+
+
+@st.cache_data
+def resample_data(values, index_strs, freq):
+    """Resample a series to the chosen frequency. Handles duplicate timestamps."""
+    s = pd.Series(values, index=pd.to_datetime(index_strs))
+    s = s.sort_index()
+    # Deduplicate timestamps by averaging duplicates
+    s = s.groupby(s.index).mean()
+    if freq == "Hourly (original)":
+        return s
+    freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}
+    return s.resample(freq_map[freq]).mean()
+
+
+def adf_test(series):
+    result = adfuller(series.dropna(), autolag='AIC')
+    return result[1]          # p-value
+
+
+def auto_diff(series, max_d=2):
+    """Return the minimum d that makes the series stationary (ADF p<0.05)."""
+    for d in range(0, max_d + 1):
+        s = series.diff(d).dropna() if d > 0 else series
+        if adf_test(s) < 0.05:
+            return d
+    return max_d
+
+
+def suggest_arima_orders(series, max_p=5, max_q=5):
+    """
+    Suggest p, d, q from ADF + ACF/PACF analysis.
+    Uses a simple BIC grid search over a small candidate set.
+    """
+    d = auto_diff(series)
+    diff_series = series.diff(d).dropna() if d > 0 else series
+
+    # Candidate p from PACF, q from ACF (look at first significant lag)
+    try:
+        pacf_vals = pacf(diff_series, nlags=max_p, method='ywm')
+        acf_vals  = acf(diff_series,  nlags=max_q)
+        sig = 1.96 / np.sqrt(len(diff_series))
+        p_cand = [i for i in range(1, max_p+1) if abs(pacf_vals[i]) > sig]
+        q_cand = [i for i in range(1, max_q+1) if abs(acf_vals[i])  > sig]
+        p_cand = p_cand[:3] if p_cand else [1]
+        q_cand = q_cand[:3] if q_cand else [1]
+    except Exception:
+        p_cand, q_cand = [1], [1]
+
+    best_bic, best_order = np.inf, (p_cand[0], d, q_cand[0])
+    for p in p_cand:
+        for q in q_cand:
+            try:
+                bic = ARIMA(series, order=(p, d, q)).fit().bic
+                if bic < best_bic:
+                    best_bic, best_order = bic, (p, d, q)
+            except Exception:
+                continue
+    return best_order
+
+
+def calculate_metrics(y_true, y_pred):
+    mae  = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    mape = np.mean(np.abs((np.array(y_true) - np.array(y_pred)) /
+                           np.clip(np.abs(y_true), 1e-8, None))) * 100
+    return mae, rmse, mape
+
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <h2 style="color: #2c5aa0; margin-bottom: 1.5rem; font-weight: 600;">Data Setup</h2>
+    """, unsafe_allow_html=True)
+    
+    uploaded_file = st.file_uploader("Upload Time Series CSV", type=['csv'], label_visibility="collapsed")
+
+    if uploaded_file is None:
+        st.markdown("""
+        <div class="warning-card">
+            <strong>Step 1:</strong> Upload your dataset (e.g., 'PJME_engineered.csv')
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    df_raw = load_data(uploaded_file)
+    
+    st.markdown("---")
+    st.markdown("<h3 style='color: #2c5aa0; font-weight: 600;'>Configuration</h3>", unsafe_allow_html=True)
+
+    datetime_col = st.selectbox("Datetime Column", df_raw.columns, index=0)
+    numeric_cols  = df_raw.select_dtypes(include=np.number).columns.tolist()
+    target_col    = st.selectbox("Target Variable", numeric_cols)
+
+    try:
+        df_raw[datetime_col] = pd.to_datetime(df_raw[datetime_col])
+        df_raw.set_index(datetime_col, inplace=True)
+        df_raw.sort_index(inplace=True)
+        st.success(f"**{len(df_raw):,} rows loaded successfully**")
+    except Exception as e:
+        st.error(f"Datetime error: {e}")
+        st.stop()
+
+    st.markdown("---")
+    st.markdown("<p style='font-size: 0.85em; color: #666; text-align: center;'>Ready to analyze</p>", unsafe_allow_html=True)
+
+
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+st.markdown("---")
+tab1, tab2, tab3 = st.tabs([
+    "Data Overview & Filters",
+    "Time Series Forecasting",
+    "Anomaly Detection"
+])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — DATA OVERVIEW
+# ══════════════════════════════════════════════════════════════════════════════
+with tab1:
+    st.markdown("<h2 style='color: #2c5aa0; font-weight: 600;'>Data Overview & Filters</h2>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("<h4 style='color: #555; font-weight: 600;'>Date Range</h4>", unsafe_allow_html=True)
+        min_date = df_raw.index.min().date()
+        max_date = df_raw.index.max().date()
+        start_date, end_date = st.date_input(
+            "Select date range:",
+            [min_date, max_date],
+            min_value=min_date, max_value=max_date,
+            label_visibility="collapsed"
+        )
+    with col2:
+        st.markdown("<h4 style='color: #555; font-weight: 600;'>Value Range</h4>", unsafe_allow_html=True)
+        min_val = float(df_raw[target_col].min())
+        max_val = float(df_raw[target_col].max())
+        val_range = st.slider(
+            f"Filter by {target_col} Range:",
+            min_value=min_val, max_value=max_val,
+            value=(min_val, max_val),
+            label_visibility="collapsed"
+        )
+
+    mask = (
+        (df_raw.index.date >= start_date) &
+        (df_raw.index.date <= end_date) &
+        (df_raw[target_col] >= val_range[0]) &
+        (df_raw[target_col] <= val_range[1])
+    )
+    filtered_df = df_raw.loc[mask]
+
+    st.markdown(f"""
+    <div class="success-card">
+        <strong>Showing {len(filtered_df):,} of {len(df_raw):,} rows</strong>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("Data Table (First 100 rows)", expanded=True):
+        st.dataframe(filtered_df.head(100), use_container_width=True)
+
+    st.markdown("<h3 style='color: #2c5aa0; margin-top: 2rem; font-weight: 600;'>Historical Trend</h3>", unsafe_allow_html=True)
+    fig, ax = plt.subplots(figsize=(13, 4.5))
+    ax.plot(filtered_df.index, filtered_df[target_col], color='#2c5aa0', linewidth=1)
+    ax.fill_between(filtered_df.index, filtered_df[target_col], alpha=0.15, color='#2c5aa0')
+    ax.set_title(f"{target_col} — Historical Trend", fontsize=13, fontweight='600', pad=15)
+    ax.set_ylabel("Consumption (MW)", fontsize=11)
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+    st.pyplot(fig)
+
+    # Basic stats
+    st.markdown("<h3 style='color: #2c5aa0; margin-top: 2rem; font-weight: 600;'>Descriptive Statistics</h3>", unsafe_allow_html=True)
+    
+    stats_df = filtered_df[target_col].describe().to_frame().T
+    
+    # Create metric columns for key stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Count", f"{int(stats_df['count'].values[0]):,}")
+    with col2:
+        st.metric("Mean (MW)", f"{stats_df['mean'].values[0]:,.0f}")
+    with col3:
+        st.metric("Std Dev", f"{stats_df['std'].values[0]:,.0f}")
+    with col4:
+        st.metric("Max (MW)", f"{stats_df['max'].values[0]:,.0f}")
+    
+    with st.expander("Full Statistics Table"):
+        st.dataframe(stats_df, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — FORECASTING
+# ══════════════════════════════════════════════════════════════════════════════
+with tab2:
+    st.markdown("<h2 style='color: #2c5aa0; font-weight: 600;'>Time Series Forecasting (ARIMA)</h2>", unsafe_allow_html=True)
+    st.write("Uses the **entire dataset** resampled to the chosen frequency for maximum accuracy.")
+    
+    with st.expander("What is ARIMA?", expanded=False):
+        st.markdown("""
+        **ARIMA (AutoRegressive Integrated Moving Average)** is a classical statistical method for time series forecasting.
+        - **AR (p)**: Uses past values to predict future values
+        - **I (d)**: Differencing to make the series stationary (stable over time)
+        - **MA (q)**: Uses past prediction errors to improve forecasts
+        
+        This method is ideal for capturing trends and patterns in energy consumption data.
+        """)
+
+    st.markdown("---")
+    
+    col1, col2 = st.columns([1, 3])
+
+    with col1:
+        st.markdown("<h3 style='color: #2c5aa0; font-weight: 600;'>Configuration</h3>", unsafe_allow_html=True)
+        
+        # ARIMA is the only forecasting model
+        model_choice = "ARIMA"
+
+        freq_choice = st.selectbox(
+            "Data Frequency:",
+            ["Daily", "Weekly", "Monthly", "Hourly (original)"],
+            index=0,
+            help=(
+                "Daily is recommended — aggregates 145k hourly rows into ~6k daily "
+                "averages for much better signal-to-noise and faster fitting."
+            )
+        )
+        
+        st.caption("Order Selection: Auto (recommended)")
+
+        train_pct = st.slider("Training Data (%)", 50, 95, 80)
+        
+        st.markdown("")
+        run_btn = st.button("Run Forecast", type="primary", use_container_width=True)
+
+    with col2:
+        if run_btn:
+            # ── Prepare series ──────────────────────────────────────────────
+            full_series = df_raw[target_col].dropna()
+            resampled   = resample_data(
+                full_series.values,
+                full_series.index.astype(str).tolist(),
+                freq_choice
+            )
+            resampled   = resampled.dropna()
+
+            st.info(
+                f"📦 Using **{len(resampled):,} {freq_choice.lower()} data points** "
+                f"(aggregated from {len(full_series):,} hourly rows)."
+            )
+
+            split_idx  = int(len(resampled) * (train_pct / 100))
+            train_data = resampled.iloc[:split_idx]
+            test_data  = resampled.iloc[split_idx:]
+
+            # ── ADF stationarity info ───────────────────────────────────────
+            adf_p = adf_test(resampled)
+            stat_label = "Stationary" if adf_p < 0.05 else "Non-stationary"
+            st.caption(f"ADF test p-value: **{adf_p:.4f}** — {stat_label}")
+
+            # ── Order selection ─────────────────────────────────────────────
+            # Always auto — order_mode is always "Auto (recommended)"
+            with st.spinner("Auto-selecting ARIMA orders via BIC grid search..."):
+                best_p, best_d, best_q = suggest_arima_orders(train_data)
+            st.success(f"Auto-selected orders: **p={best_p}, d={best_d}, q={best_q}**")
+            p, d, q = best_p, best_d, best_q
+
+            # ── ACF / PACF diagnostic plots ─────────────────────────────────
+            with st.expander("ACF / PACF Diagnostic Plots"):
+                diff_series = train_data.diff(d).dropna() if d > 0 else train_data
+                fig_diag, axes = plt.subplots(1, 2, figsize=(13, 3.5))
+                plot_acf(diff_series,  lags=40, ax=axes[0], title="ACF (differenced series)")
+                plot_pacf(diff_series, lags=40, ax=axes[1], title="PACF (differenced series)", method='ywm')
+                for ax in axes:
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                plt.tight_layout()
+                st.pyplot(fig_diag)
+
+            # ── Fit model ───────────────────────────────────────────────────
+            with st.spinner(f"Fitting ARIMA({p},{d},{q})…"):
+                try:
+                    fitted = ARIMA(train_data, order=(p, d, q)).fit()
+
+                    # ── Forecast ────────────────────────────────────────────
+                    fc_obj      = fitted.get_forecast(steps=len(test_data))
+                    predictions = fc_obj.predicted_mean
+                    conf_int    = fc_obj.conf_int(alpha=0.05)
+                    predictions.index = test_data.index
+                    conf_int.index    = test_data.index
+
+                    mae, rmse, mape = calculate_metrics(test_data.values, predictions.values)
+
+                    # ── Model summary ───────────────────────────────────────
+                    with st.expander("📋 ARIMA Model Summary", expanded=False):
+                        st.text(str(fitted.summary()))
+
+                    # ── Metrics ─────────────────────────────────────────────
+                    st.markdown("<h3 style='color: #4a90e2; margin-top: 1.5rem;'>📊 Model Performance Metrics</h3>", unsafe_allow_html=True)
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Mean Absolute Error (MAE)",  f"{mae:.2f} MW", delta=None)
+                    m2.metric("Root Mean Squared Error (RMSE)", f"{rmse:.2f} MW", delta=None)
+                    m3.metric("Mean Absolute Percentage Error (MAPE)", f"{mape:.2f}%", delta=None)
+
+                    # ── Forecast plot ───────────────────────────────────────
+                    st.markdown("<h3 style='color: #2c5aa0; margin-top: 1.5rem; font-weight: 600;'>Forecast Visualization</h3>", unsafe_allow_html=True)
+                    fig, ax = plt.subplots(figsize=(14, 6))
+                    plot_train = train_data.tail(200)
+                    ax.plot(plot_train.index, plot_train,
+                            label='Training Data (last 200 pts)', color='#6c757d', linewidth=1, alpha=0.7)
+                    ax.plot(test_data.index, test_data,
+                            label='Actual', color='#28a745', linewidth=1.5)
+                    ax.plot(test_data.index, predictions,
+                            label='ARIMA Forecast',
+                            color='#dc3545',
+                            linestyle='--', linewidth=1.5)
+                    ax.fill_between(
+                        test_data.index,
+                        conf_int.iloc[:, 0], conf_int.iloc[:, 1],
+                        alpha=0.15,
+                        color='#dc3545',
+                        label='95% Confidence Interval'
+                    )
+                    ax.set_title(
+                        f"ARIMA Forecast — {freq_choice} Aggregation (Orders: {p},{d},{q})",
+                        fontsize=13,
+                        fontweight='600',
+                        pad=15
+                    )
+                    ax.set_ylabel("Consumption (MW)", fontsize=11)
+                    ax.set_xlabel("Date", fontsize=11)
+                    ax.xaxis.set_major_formatter(mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+                    fig.autofmt_xdate()
+                    ax.legend(loc='best', framealpha=0.95)
+                    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                    # ── Residual plot ───────────────────────────────────────
+                    with st.expander("Residual Analysis"):
+                        residuals = test_data.values - predictions.values
+                        fig_r, axes_r = plt.subplots(1, 2, figsize=(13, 3.5))
+                        axes_r[0].plot(test_data.index, residuals, color='#6c757d', linewidth=1)
+                        axes_r[0].axhline(0, color='#dc3545', linestyle='--', linewidth=1.5)
+                        axes_r[0].set_title("Residuals over time", fontweight='600')
+                        axes_r[0].set_ylabel("Error (MW)")
+                        axes_r[0].grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                        axes_r[0].spines['top'].set_visible(False)
+                        axes_r[0].spines['right'].set_visible(False)
+                        axes_r[1].hist(residuals, bins=30, color='#2c5aa0', edgecolor='white', alpha=0.8)
+                        axes_r[1].set_title("Residual Distribution", fontweight='600')
+                        axes_r[1].set_xlabel("Error (MW)")
+                        axes_r[1].spines['top'].set_visible(False)
+                        axes_r[1].spines['right'].set_visible(False)
+                        plt.tight_layout()
+                        st.pyplot(fig_r)
+
+                    # ── Forecast table ──────────────────────────────────────
+                    st.subheader("Forecast vs Actual")
+                    result_df = pd.DataFrame({
+                        "Actual (MW)":   test_data.values,
+                        "Forecast (MW)": predictions.values.round(2),
+                        "Lower CI":      conf_int.iloc[:, 0].values.round(2),
+                        "Upper CI":      conf_int.iloc[:, 1].values.round(2),
+                        "Error (MW)":    (test_data.values - predictions.values).round(2)
+                    }, index=test_data.index)
+                    st.dataframe(result_df, use_container_width=True)                    
+                    # ── Download forecast results ───────────────────────────
+                    csv_forecast = result_df.reset_index().to_csv(index=False)
+                    st.download_button(
+                        label="Download Forecast Results (CSV)",
+                        data=csv_forecast,
+                        file_name=f"arima_forecast_{freq_choice.lower().replace(' ', '_')}.csv",
+                        mime="text/csv"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Model fitting failed: {e}")
+                    st.write("Try switching to Auto order selection, or change the resampling frequency.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — ANOMALY DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("<h2 style='color: #2c5aa0; font-weight: 600;'>Anomaly Detection (Z-Score)</h2>", unsafe_allow_html=True)
+    st.write("Detects abnormal usage patterns using **Z-score method** on the **entire dataset**.")
+    
+    with st.expander("What is Anomaly Detection?", expanded=False):
+        st.markdown("""
+        **Anomaly Detection** identifies unusual or abnormal data points that deviate significantly from normal patterns.
+        
+        **Z-score Method:**
+        - Calculates how many standard deviations each value is from the mean
+        - Values beyond the threshold (e.g., ±3σ) are marked as anomalies
+        - **Higher threshold** = stricter detection (fewer false positives)
+        - **Lower threshold** = lenient detection (catches more deviations)
+        
+        **Why it matters for energy data:**
+        - Identifies equipment malfunctions or sudden demand spikes
+        - Detects unusual consumption patterns that may indicate inefficiencies
+        - Helps operators respond to abnormal grid conditions
+        """)
+    
+    st.markdown("---")
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        st.markdown("<h3 style='color: #2c5aa0; font-weight: 600;'>Parameters</h3>", unsafe_allow_html=True)
+        z_threshold = st.slider(
+            "Z-score Threshold (σ)", 2.0, 4.0, 3.0, step=0.1,
+            help="Higher = stricter detection (fewer anomalies). Lower = more sensitive."
+        )
+        use_features = st.multiselect(
+            "Additional Features:",
+            [c for c in numeric_cols if c != target_col],
+            default=[],
+            help="Adding engineered features (hour, lag, rolling mean) improves detection."
+        )
+        st.markdown("")
+        run_anomaly = st.button("Run Anomaly Detection", type="primary", use_container_width=True)
+
+    with col2:
+        if run_anomaly:
+            with st.spinner("Running Z-score Anomaly Detection on full dataset…"):
+                feature_cols = [target_col] + use_features
+                data_ad = df_raw[feature_cols].dropna().copy()
+
+                # Calculate Z-scores for the target column
+                mean_val = data_ad[target_col].mean()
+                std_val = data_ad[target_col].std()
+                data_ad['Z_Score'] = np.abs((data_ad[target_col] - mean_val) / std_val)
+                
+                # Flag anomalies based on threshold
+                data_ad['Anomaly'] = np.where(data_ad['Z_Score'] > z_threshold, -1, 1)
+                
+                anomalies = data_ad[data_ad['Anomaly'] == -1]
+
+                # ── Plot ────────────────────────────────────────────────────
+                st.markdown("<h3 style='color: #2c5aa0; margin-top: 1.5rem; font-weight: 600;'>Anomaly Visualization</h3>", unsafe_allow_html=True)
+                fig, ax = plt.subplots(figsize=(14, 6))
+                ax.plot(data_ad.index, data_ad[target_col],
+                        label='Consumption', color='#2c5aa0', alpha=0.6, linewidth=1)
+                ax.fill_between(data_ad.index, data_ad[target_col], alpha=0.08, color='#2c5aa0')
+                ax.scatter(anomalies.index, anomalies[target_col],
+                           color='#dc3545', label=f'Anomaly ({len(anomalies):,})',
+                           zorder=5, s=25, alpha=0.9, edgecolors='#a71d2a', linewidth=0.5)
+                ax.set_title(
+                    f"Z-score Anomaly Detection — {len(anomalies):,} anomalies (threshold: {z_threshold} σ)",
+                    fontsize=14, fontweight='600', pad=15
+                )
+                ax.set_ylabel("Consumption (MW)", fontsize=11)
+                ax.set_xlabel("Datetime", fontsize=11)
+                ax.xaxis.set_major_formatter(mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+                fig.autofmt_xdate()
+                ax.legend(loc='best', framealpha=0.95)
+                ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                # ── Stats ───────────────────────────────────────────────────
+                st.markdown("<h3 style='color: #2c5aa0; margin-top: 1.5rem; font-weight: 600;'>Anomaly Statistics</h3>", unsafe_allow_html=True)
+                a1, a2, a3, a4 = st.columns(4)
+                a1.metric("Total Anomalies",   f"{len(anomalies):,}")
+                a2.metric("Anomaly Rate",       f"{len(anomalies)/len(data_ad)*100:.2f}%")
+                a3.metric("Min Anomaly (MW)",   f"{anomalies[target_col].min():,.0f}")
+                a4.metric("Max Anomaly (MW)",   f"{anomalies[target_col].max():,.0f}")
+
+                # Z-score distribution
+                with st.expander("Z-score Distribution", expanded=False):
+                    fig_s, ax_s = plt.subplots(figsize=(12, 4))
+                    ax_s.hist(data_ad['Z_Score'], bins=60, color='#2c5aa0',
+                              edgecolor='white', alpha=0.7, label='Normal')
+                    ax_s.hist(anomalies['Z_Score'], bins=30, color='#dc3545',
+                              edgecolor='white', alpha=0.8, label='Anomaly')
+                    ax_s.axvline(z_threshold, color='#28a745', linestyle='--', linewidth=2, label=f'Threshold ({z_threshold} σ)')
+                    ax_s.set_title("Z-score Distribution", fontsize=12, fontweight='600')
+                    ax_s.set_xlabel("Z-score (|deviation from mean in std|)")
+                    ax_s.legend(framealpha=0.95)
+                    ax_s.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                    ax_s.spines['top'].set_visible(False)
+                    ax_s.spines['right'].set_visible(False)
+                    plt.tight_layout()
+                    st.pyplot(fig_s)
+
+                # ── Timestamps table ────────────────────────────────────────
+                st.markdown("<h3 style='color: #2c5aa0; margin-top: 1.5rem; font-weight: 600;'>Detected Anomalies (Top 200)</h3>", unsafe_allow_html=True)
+                display_cols = [target_col, 'Z_Score'] + use_features
+                anomaly_display = anomalies[display_cols].sort_values('Z_Score', ascending=False).head(200)
+                
+                with st.expander("Anomaly Details Table", expanded=True):
+                    st.dataframe(anomaly_display, use_container_width=True)
+                
+                # ── Download anomalies ──────────────────────────────────────
+                st.markdown("---")
+                col_left, col_right = st.columns([1, 3])
+                with col_left:
+                    csv_anomalies = anomaly_display.reset_index().to_csv(index=False)
+                    st.download_button(
+                        label="Download Results (CSV)",
+                        data=csv_anomalies,
+                        file_name=f"anomaly_detection_z_score_{z_threshold}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                with col_right:
+                    st.info(f"**{len(anomalies):,} total anomalies detected** across the entire dataset")
